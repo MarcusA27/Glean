@@ -14,6 +14,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         self.controller = controller
 
         model.onSessionExpired = { [weak self] in self?.reauthenticate() }
+        model.onLogoutRequested = { [weak self] in self?.reauthenticate() }
 
         auth.loadSession { [weak self] cookies in
             self?.model.connect(PinterestClient(cookies: cookies))

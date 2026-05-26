@@ -51,6 +51,7 @@ public final class PanelController {
         isHidden.toggle()
         if isHidden {
             model.isExpanded = false
+            model.confirmingLogout = false
             panel.ignoresMouseEvents = true
             panel.orderOut(nil)
         } else {
@@ -124,6 +125,7 @@ public final class PanelController {
             guard let self, !Task.isCancelled else { return }
             self.collapseTask = nil
             self.model.isExpanded = false
+            self.model.confirmingLogout = false
             self.panel.ignoresMouseEvents = true
         }
     }

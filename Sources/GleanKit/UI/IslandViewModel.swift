@@ -8,10 +8,13 @@ public final class IslandViewModel: ObservableObject {
     @Published public var selectedBoardID: String?
     @Published public var isLoading = false
     @Published public var isReloading = false
+    @Published public var confirmingLogout = false
     /// True while a pin is being dragged out; keeps the island from collapsing mid-drag.
     public var isDragging = false
     /// Invoked when the stored session is rejected by the server (expired cookies).
     var onSessionExpired: (() -> Void)?
+    /// Invoked when the user taps logout — clears the session and prompts a fresh login.
+    var onLogoutRequested: (() -> Void)?
 
     private var client: PinterestClient?
     private var username: String?
@@ -25,6 +28,16 @@ public final class IslandViewModel: ObservableObject {
     }
 
     public init() {}
+
+    /// User-initiated logout: clear shown content and ask to re-authenticate.
+    public func requestLogout() {
+        pins = []
+        boards = []
+        selectedBoardID = nil
+        username = nil
+        lastRefresh = nil
+        onLogoutRequested?()
+    }
 
     /// Called once at launch (and after re-auth): store the session client and load.
     func connect(_ client: PinterestClient) {

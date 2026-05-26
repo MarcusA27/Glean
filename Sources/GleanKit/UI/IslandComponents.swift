@@ -18,11 +18,20 @@ struct ExpandedContent: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            BoardChips(model: model)
-                .overlay(alignment: .trailing) {
-                    RefreshButton(isReloading: model.isReloading) { model.reload() }
+            if model.confirmingLogout {
+                LogoutConfirmBar(model: model)
+            } else {
+                BoardChips(model: model)
+                    .overlay(alignment: .trailing) {
+                        HStack(spacing: 6) {
+                            IconButton(systemName: "rectangle.portrait.and.arrow.right") {
+                                model.confirmingLogout = true
+                            }
+                            RefreshButton(isReloading: model.isReloading) { model.reload() }
+                        }
                         .padding(.trailing, 12)
-                }
+                    }
+            }
             if model.visiblePins.isEmpty {
                 Text(model.isLoading ? "Loading your pins…" : "No pins")
                     .font(.system(size: 12))
@@ -74,6 +83,57 @@ struct BoardChips: View {
 
     private func select(_ id: String?) {
         withAnimation(.easeOut(duration: 0.2)) { model.selectedBoardID = id }
+    }
+}
+
+struct LogoutConfirmBar: View {
+    @ObservedObject var model: IslandViewModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Log out of Pinterest?")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.85))
+
+            Button(action: { model.confirmingLogout = false }) {
+                Text("Cancel")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .padding(.horizontal, 11).padding(.vertical, 4)
+                    .background(Capsule().fill(.white.opacity(0.10)))
+            }
+            .buttonStyle(.plain)
+
+            Button(action: {
+                model.confirmingLogout = false
+                model.requestLogout()
+            }) {
+                Text("Log out")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 11).padding(.vertical, 4)
+                    .background(Capsule().fill(Color.red.opacity(0.85)))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 28)
+    }
+}
+
+struct IconButton: View {
+    let systemName: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(.white.opacity(0.10)))
+        }
+        .buttonStyle(.plain)
     }
 }
 
