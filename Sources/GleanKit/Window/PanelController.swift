@@ -3,17 +3,19 @@ import SwiftUI
 import Carbon.HIToolbox
 
 @MainActor
-public final class PanelController {
+public final class PanelController: NSObject {
     private let panel: IslandPanel
     private let model: IslandViewModel
     private var hoverMonitor: HoverMonitor?
     private var collapseTask: Task<Void, Never>?
     private var hotKey: HotKey?
+    private var statusItem: NSStatusItem?
     private var isHidden = false
 
     public init(model: IslandViewModel) {
         self.model = model
         panel = IslandPanel(contentRect: NSRect(origin: .zero, size: IslandMetrics.panelSize))
+        super.init()
 
         let host = NSHostingView(rootView: IslandView(model: model))
         host.frame = NSRect(origin: .zero, size: IslandMetrics.panelSize)
@@ -25,6 +27,7 @@ public final class PanelController {
     public func show() {
         reposition()
         panel.orderFrontRegardless()
+        setupStatusItem()
 
         let monitor = HoverMonitor { [weak self] location in
             self?.handleMouse(at: location)
@@ -58,6 +61,51 @@ public final class PanelController {
             reposition()
             panel.orderFrontRegardless()
         }
+    }
+
+    // MARK: - Menu bar item (the app's only quit affordance, since it has no dock icon)
+
+    private func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let image = NSImage(contentsOf: url) {
+            item.button?.image = Self.menuBarIcon(from: image)
+        } else {
+            item.button?.title = "Glean"
+        }
+
+        let menu = NSMenu()
+        let toggle = NSMenuItem(title: "Show / Hide", action: #selector(menuToggle), keyEquivalent: "")
+        toggle.target = self
+        menu.addItem(toggle)
+        let refresh = NSMenuItem(title: "Refresh Pins", action: #selector(menuRefresh), keyEquivalent: "")
+        refresh.target = self
+        menu.addItem(refresh)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit Glean", action: #selector(menuQuit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        item.menu = menu
+        statusItem = item
+    }
+
+    @objc private func menuToggle() { toggleHidden() }
+    @objc private func menuRefresh() { model.reload() }
+    @objc private func menuQuit() { NSApp.terminate(nil) }
+
+    /// The logo has a transparent background, so we draw it on a small rounded tile to
+    /// give it a visible rounded shape in the menu bar.
+    private static func menuBarIcon(from source: NSImage, size: CGFloat = 18, radius: CGFloat = 4.5) -> NSImage {
+        let image = NSImage(size: NSSize(width: size, height: size))
+        image.lockFocus()
+        let rect = NSRect(x: 0, y: 0, width: size, height: size)
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).addClip()
+        NSColor(white: 0.11, alpha: 1.0).setFill()
+        rect.fill()
+        source.draw(in: rect.insetBy(dx: 1, dy: 1), from: .zero, operation: .sourceOver, fraction: 1.0)
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
 
     // MARK: - Positioning
