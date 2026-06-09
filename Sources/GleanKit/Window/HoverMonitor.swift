@@ -11,21 +11,26 @@ import AppKit
 final class HoverMonitor {
     private nonisolated(unsafe) var globalMonitor: Any?
     private nonisolated(unsafe) var localMonitor: Any?
-    private let onMove: (CGPoint) -> Void
+    /// Reports the absolute cursor location, the event's horizontal/vertical deltas,
+    /// and its timestamp. The deltas keep reporting device motion even when the cursor
+    /// is clamped at a screen edge — that's how an intentional "shove into the wall" is
+    /// detected, on whichever edge the drawer is docked; the timestamp lets us discard
+    /// the arrival momentum first.
+    private let onMove: (CGPoint, CGFloat, CGFloat, TimeInterval) -> Void
 
-    init(onMove: @escaping (CGPoint) -> Void) {
+    init(onMove: @escaping (CGPoint, CGFloat, CGFloat, TimeInterval) -> Void) {
         self.onMove = onMove
     }
 
     func start() {
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
             MainActor.assumeIsolated {
-                self?.onMove(NSEvent.mouseLocation)
+                self?.onMove(NSEvent.mouseLocation, event.deltaX, event.deltaY, event.timestamp)
             }
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
             MainActor.assumeIsolated {
-                self?.onMove(NSEvent.mouseLocation)
+                self?.onMove(NSEvent.mouseLocation, event.deltaX, event.deltaY, event.timestamp)
             }
             return event
         }

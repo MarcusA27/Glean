@@ -6,25 +6,51 @@ public final class IslandViewModel: ObservableObject {
     @Published public var boards: [Board] = []
     @Published public var pins: [Pin] = []
     @Published public var selectedBoardID: String?
+    /// Live search text. When non-empty, the grid filters across ALL pins (ignoring the
+    /// selected board) by title match.
+    @Published public var searchQuery = ""
+    /// Pin id → its dominant color range (filled in lazily in the background).
+    @Published public var pinColors: [String: ColorBucket] = [:]
+    /// Pin id → Vision image-label tokens, so junk/empty-title pins are still searchable.
+    @Published public var pinLabels: [String: [String]] = [:]
+    /// The single color range the user is filtering by, if any.
+    @Published public var selectedColor: ColorBucket?
     @Published public var isLoading = false
     @Published public var isReloading = false
     @Published public var confirmingLogout = false
-    /// True while a pin is being dragged out; keeps the island from collapsing mid-drag.
-    public var isDragging = false
+    /// True while a pin is being dragged out; the window fades away during the drag.
+    @Published public var isDragging = false
     /// Invoked when the stored session is rejected by the server (expired cookies).
     var onSessionExpired: (() -> Void)?
     /// Invoked when the user taps logout — clears the session and prompts a fresh login.
     var onLogoutRequested: (() -> Void)?
+    /// Invoked when search opens/closes, so the panel can take/relinquish keyboard focus
+    /// (it's otherwise non-key so it never steals focus).
+    var onSearchModeChange: ((Bool) -> Void)?
 
     private var client: PinterestClient?
     private var username: String?
     private var lastRefresh: Date?
     private var refreshing = false
+    private var analyzing = false
     private let throttle: TimeInterval = 3 // re-check for new pins on (nearly) every open
 
     public var visiblePins: [Pin] {
-        guard let selectedBoardID else { return pins }
-        return pins.filter { $0.boardID == selectedBoardID }
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let filtering = !query.isEmpty || selectedColor != nil
+
+        // Search and color filter both span every board; otherwise show the picked board.
+        var result = filtering ? pins : (selectedBoardID.map { id in pins.filter { $0.boardID == id } } ?? pins)
+        if !query.isEmpty {
+            result = result.filter { pin in
+                pin.title.lowercased().contains(query)
+                    || (pinLabels[pin.id]?.contains { $0.contains(query) } ?? false)
+            }
+        }
+        if let selectedColor {
+            result = result.filter { (pinColors[$0.id] ?? .neutral) == selectedColor }
+        }
+        return result
     }
 
     public init() {}
@@ -42,6 +68,7 @@ public final class IslandViewModel: ObservableObject {
     /// Called once at launch (and after re-auth): store the session client and load.
     func connect(_ client: PinterestClient) {
         self.client = client
+        loadAnalysis()
         Task { await fullLoad(progressive: true) }
     }
 
@@ -102,6 +129,7 @@ public final class IslandViewModel: ObservableObject {
             }
         }
         pins = collected
+        analyzePins()
     }
 
     /// Cheap refresh: refetch boards + the first page of each, prepend pins we don't have.
@@ -124,6 +152,72 @@ public final class IslandViewModel: ObservableObject {
         let newOnes = firstPage.filter { !existing.contains($0.id) }
         if !newOnes.isEmpty {
             pins = newOnes + pins
+            analyzePins()
+        }
+    }
+
+    // MARK: - Color analysis (background, cached to disk)
+
+    /// Classify the dominant color range of any pins we haven't seen yet, off the main
+    /// thread, publishing in batches and persisting the result.
+    private func analyzePins() {
+        let todo = pins.filter { $0.thumbnailURL != nil && (pinColors[$0.id] == nil || pinLabels[$0.id] == nil) }
+        guard !todo.isEmpty, !analyzing else { return }
+        analyzing = true
+        Task.detached(priority: .utility) { [weak self] in
+            var colors: [String: ColorBucket] = [:]
+            var labels: [String: [String]] = [:]
+            for pin in todo {
+                guard let url = pin.thumbnailURL,
+                      let data = try? await URLSession.shared.data(from: url).0 else { continue }
+                let bucket = ColorAnalyzer.bucket(forData: data)
+                let tokens = LabelAnalyzer.labels(forData: data)
+                guard bucket != nil || tokens != nil else { continue } // decode failed
+                colors[pin.id] = bucket ?? .neutral
+                labels[pin.id] = tokens ?? []
+                if colors.count >= 16 {
+                    let c = colors, l = labels
+                    colors = [:]; labels = [:]
+                    await self?.mergeAnalysis(colors: c, labels: l)
+                }
+            }
+            await self?.mergeAnalysis(colors: colors, labels: labels)
+            await self?.finishAnalysis()
+        }
+    }
+
+    private func mergeAnalysis(colors: [String: ColorBucket], labels: [String: [String]]) {
+        if !colors.isEmpty { pinColors.merge(colors) { _, fresh in fresh } }
+        if !labels.isEmpty { pinLabels.merge(labels) { _, fresh in fresh } }
+    }
+
+    private func finishAnalysis() {
+        analyzing = false
+        persist(pinColors.mapValues { $0.rawValue }, to: "colors.json")
+        persist(pinLabels, to: "labels.json")
+    }
+
+    private func analysisFileURL(_ name: String) -> URL? {
+        let fm = FileManager.default
+        guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("Glean", isDirectory: true)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent(name)
+    }
+
+    private func persist<T: Encodable>(_ value: T, to name: String) {
+        guard let url = analysisFileURL(name) else { return }
+        try? JSONEncoder().encode(value).write(to: url)
+    }
+
+    private func loadAnalysis() {
+        if let url = analysisFileURL("colors.json"), let data = try? Data(contentsOf: url),
+           let raw = try? JSONDecoder().decode([String: String].self, from: data) {
+            pinColors = raw.compactMapValues { ColorBucket(rawValue: $0) }
+        }
+        if let url = analysisFileURL("labels.json"), let data = try? Data(contentsOf: url),
+           let raw = try? JSONDecoder().decode([String: [String]].self, from: data) {
+            pinLabels = raw
         }
     }
 

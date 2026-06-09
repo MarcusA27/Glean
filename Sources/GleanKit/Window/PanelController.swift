@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import Carbon.HIToolbox
 
 @MainActor
@@ -7,21 +8,25 @@ public final class PanelController: NSObject {
     private let panel: IslandPanel
     private let model: IslandViewModel
     private var hoverMonitor: HoverMonitor?
-    private var collapseTask: Task<Void, Never>?
     private var hotKey: HotKey?
     private var statusItem: NSStatusItem?
-    private var isHidden = false
+    private var cancellables = Set<AnyCancellable>()
+    private var wasDragging = false
+    /// Blocked leftward motion accumulated while the cursor is pinned at the left edge.
+    private var pushAccum: CGFloat = 0
+    /// Event timestamp at which the cursor first touched the wall this contact.
+    private var wallContactTime: TimeInterval?
 
     public init(model: IslandViewModel) {
         self.model = model
-        panel = IslandPanel(contentRect: NSRect(origin: .zero, size: IslandMetrics.panelSize))
+        panel = IslandPanel(contentRect: NSRect(origin: .zero, size: DrawerMetrics.windowSize))
         super.init()
 
-        let host = NSHostingView(rootView: IslandView(model: model))
-        host.frame = NSRect(origin: .zero, size: IslandMetrics.panelSize)
+        let host = NSHostingView(rootView: DrawerView(model: model))
+        host.frame = NSRect(origin: .zero, size: DrawerMetrics.windowSize)
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
-        panel.ignoresMouseEvents = true // pass-through until the cursor reaches the pill
+        panel.ignoresMouseEvents = true // pass-through to other apps until summoned
     }
 
     public func show() {
@@ -29,8 +34,8 @@ public final class PanelController: NSObject {
         panel.orderFrontRegardless()
         setupStatusItem()
 
-        let monitor = HoverMonitor { [weak self] location in
-            self?.handleMouse(at: location)
+        let monitor = HoverMonitor { [weak self] location, deltaX, _, timestamp in
+            self?.handleMouse(at: location, deltaX: deltaX, timestamp: timestamp)
         }
         monitor.start()
         hoverMonitor = monitor
@@ -43,27 +48,73 @@ public final class PanelController: NSObject {
             MainActor.assumeIsolated { self?.reposition() }
         }
 
-        // ⌥⌘B toggles the island hidden/shown, system-wide.
+        // Hide on a Space switch (4-finger swipe) so it doesn't reappear abruptly.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close() }
+        }
+
+        // ⌥⌘B toggles the window open/closed, system-wide.
         hotKey = HotKey(keyCode: UInt32(kVK_ANSI_B),
                         modifiers: UInt32(cmdKey | optionKey)) { [weak self] in
-            self?.toggleHidden()
+            self?.toggle()
         }
+
+        // Search needs keyboard focus, which the panel otherwise refuses. Grant it only
+        // while searching, then drop the field's focus when search closes.
+        model.onSearchModeChange = { [weak self] active in
+            guard let self else { return }
+            self.panel.keyboardEnabled = active
+            if active {
+                self.panel.makeKeyAndOrderFront(nil)
+            } else {
+                self.panel.makeFirstResponder(nil)
+            }
+        }
+
+        // While a pin drags out, let the (faded) panel pass mouse events through so the
+        // drop lands on the app underneath; once the drag ends, stay hidden.
+        model.$isDragging
+            .sink { [weak self] dragging in
+                guard let self else { return }
+                if dragging {
+                    self.wasDragging = true
+                    self.panel.ignoresMouseEvents = true
+                } else if self.wasDragging {
+                    self.wasDragging = false
+                    self.close()
+                }
+            }
+            .store(in: &cancellables)
     }
 
-    public func toggleHidden() {
-        isHidden.toggle()
-        if isHidden {
-            model.isExpanded = false
-            model.confirmingLogout = false
-            panel.ignoresMouseEvents = true
-            panel.orderOut(nil)
-        } else {
-            reposition()
-            panel.orderFrontRegardless()
-        }
+    // MARK: - Open / close
+
+    private func open() {
+        pushAccum = 0
+        wallContactTime = nil
+        panel.ignoresMouseEvents = false
+        panel.orderFrontRegardless() // bring it onto the current Space
+        model.isExpanded = true
+        model.refreshIfStale()
     }
 
-    // MARK: - Menu bar item (the app's only quit affordance, since it has no dock icon)
+    private func close() {
+        pushAccum = 0
+        wallContactTime = nil
+        model.isExpanded = false
+        model.confirmingLogout = false
+        panel.ignoresMouseEvents = true
+    }
+
+    public func toggle() {
+        if model.isExpanded { close() } else { open() }
+    }
+
+    // MARK: - Menu bar item
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -89,12 +140,10 @@ public final class PanelController: NSObject {
         statusItem = item
     }
 
-    @objc private func menuToggle() { toggleHidden() }
+    @objc private func menuToggle() { toggle() }
     @objc private func menuRefresh() { model.reload() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
 
-    /// The logo has a transparent background, so we draw it on a small rounded tile to
-    /// give it a visible rounded shape in the menu bar.
     private static func menuBarIcon(from source: NSImage, size: CGFloat = 18, radius: CGFloat = 4.5) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size))
         image.lockFocus()
@@ -112,74 +161,39 @@ public final class PanelController: NSObject {
 
     private func reposition() {
         guard let screen = NSScreen.main else { return }
-        let vf = screen.visibleFrame
-        let size = IslandMetrics.panelSize
-        // Anchor the island's top edge just below the menu bar; the panel extends
-        // shadowPadding above that and the full expanded height (plus padding) below.
-        let islandTopY = vf.maxY + IslandMetrics.topOffset
-        let originY = islandTopY - IslandMetrics.expanded.height - IslandMetrics.shadowPadding
-        panel.setFrame(NSRect(x: vf.midX - size.width / 2, y: originY,
+        let f = screen.frame // full screen, so it's centered between the actual edges
+        let size = DrawerMetrics.windowSize
+        panel.setFrame(NSRect(x: f.midX - size.width / 2,
+                              y: f.midY - size.height / 2,
                               width: size.width, height: size.height),
                        display: true)
     }
 
-    /// The visible island's rect in screen coordinates for a given size (top-anchored, centered).
-    private func islandScreenRect(for size: CGSize) -> CGRect {
-        guard let screen = NSScreen.main else { return .zero }
-        let vf = screen.visibleFrame
-        let islandTopY = vf.maxY + IslandMetrics.topOffset
-        return CGRect(x: vf.midX - size.width / 2,
-                      y: islandTopY - size.height,
-                      width: size.width, height: size.height)
-    }
+    // MARK: - Edge-push summon
 
-    // MARK: - Hover state machine
+    private func handleMouse(at location: CGPoint, deltaX: CGFloat, timestamp: TimeInterval) {
+        guard !model.isExpanded else { return } // stays open until toggled off
+        panel.ignoresMouseEvents = true
 
-    private func handleMouse(at location: CGPoint) {
-        guard !isHidden else { return }
-        let slop = IslandMetrics.hoverSlop
-        if model.isExpanded {
-            // Never collapse mid-drag, even as the cursor leaves the island.
-            if model.isDragging {
-                cancelCollapse()
-                panel.ignoresMouseEvents = false
-                return
-            }
-            let rect = islandScreenRect(for: IslandMetrics.expanded).insetBy(dx: -slop, dy: -slop)
-            if rect.contains(location) {
-                cancelCollapse()
-                panel.ignoresMouseEvents = false
-            } else {
-                scheduleCollapse()
-            }
-        } else {
-            let rect = islandScreenRect(for: IslandMetrics.collapsed).insetBy(dx: -slop, dy: -slop)
-            if rect.contains(location) {
-                panel.ignoresMouseEvents = false
-                if !model.isExpanded {
-                    model.isExpanded = true
-                    model.refreshIfStale() // pick up newly added pins when opened
-                }
-            } else {
-                panel.ignoresMouseEvents = true
-            }
+        guard let screen = NSScreen.main else { return }
+        let edge = screen.frame.minX
+        guard location.x <= edge + DrawerMetrics.edgeBand else {
+            wallContactTime = nil
+            pushAccum = 0
+            return
         }
-    }
-
-    private func scheduleCollapse() {
-        guard collapseTask == nil else { return } // schedule once on inside->outside
-        collapseTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: IslandMetrics.collapseDelay)
-            guard let self, !Task.isCancelled else { return }
-            self.collapseTask = nil
-            self.model.isExpanded = false
-            self.model.confirmingLogout = false
-            self.panel.ignoresMouseEvents = true
+        guard let contact = wallContactTime else {
+            wallContactTime = timestamp
+            pushAccum = 0
+            return
         }
-    }
-
-    private func cancelCollapse() {
-        collapseTask?.cancel()
-        collapseTask = nil
+        // Discard the arrival fling; only count a push that continues past the window.
+        guard timestamp - contact >= DrawerMetrics.momentumWindow else { return }
+        if deltaX < 0 {
+            pushAccum += -deltaX
+            if pushAccum >= DrawerMetrics.pushThreshold { open() }
+        } else if deltaX > 0 {
+            pushAccum = 0
+        }
     }
 }

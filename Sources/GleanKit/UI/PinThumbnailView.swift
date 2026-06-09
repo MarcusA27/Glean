@@ -19,12 +19,14 @@ enum ThumbnailLoader {
 final class PinTileNSView: NSView, NSDraggingSource {
     private var pin: Pin
     private let onDragStateChange: (Bool) -> Void
+    private let onHoverChange: (Bool) -> Void
     private var thumbnail: NSImage?
     private var promiseDelegate: PinFilePromiseDelegate?
 
-    init(pin: Pin, onDragStateChange: @escaping (Bool) -> Void) {
+    init(pin: Pin, onDragStateChange: @escaping (Bool) -> Void, onHoverChange: @escaping (Bool) -> Void) {
         self.pin = pin
         self.onDragStateChange = onDragStateChange
+        self.onHoverChange = onHoverChange
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 13
@@ -63,6 +65,11 @@ final class PinTileNSView: NSView, NSDraggingSource {
     // Electron/web targets (Claude desktop) need.
     override func mouseEntered(with event: NSEvent) {
         prefetchFullRes()
+        onHoverChange(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChange(false)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -138,10 +145,11 @@ final class PinTileNSView: NSView, NSDraggingSource {
 
 struct PinThumbnailView: NSViewRepresentable {
     let pin: Pin
+    var onHoverChange: (Bool) -> Void = { _ in }
     let onDragStateChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> PinTileNSView {
-        PinTileNSView(pin: pin, onDragStateChange: onDragStateChange)
+        PinTileNSView(pin: pin, onDragStateChange: onDragStateChange, onHoverChange: onHoverChange)
     }
 
     func updateNSView(_ nsView: PinTileNSView, context: Context) {

@@ -73,12 +73,12 @@ struct BoardChips: View {
                         }
                     }
                 }
-                .padding(.horizontal, 16)
-                // Center the chips; only scrolls once they exceed the island width.
+                .padding(.horizontal, 4)
+                // Centered in the slot; scrolls once they exceed it.
                 .frame(minWidth: geo.size.width, alignment: .center)
             }
         }
-        .frame(height: 28)
+        .frame(height: 30)
     }
 
     private func select(_ id: String?) {
@@ -134,6 +134,7 @@ struct IconButton: View {
                 .background(Circle().fill(.white.opacity(0.10)))
         }
         .buttonStyle(.plain)
+        .hoverHighlight()
     }
 }
 
@@ -156,6 +157,7 @@ struct RefreshButton: View {
         }
         .buttonStyle(.plain)
         .disabled(isReloading)
+        .hoverHighlight()
     }
 }
 
@@ -177,5 +179,6 @@ struct Chip: View {
                 )
         }
         .buttonStyle(.plain)
+        .hoverHighlight(opacity: selected ? 0 : 0.10)
     }
 }
