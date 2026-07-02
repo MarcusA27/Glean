@@ -1,5 +1,7 @@
 # Glean
 
+https://github.com/user-attachments/assets/d5f21e46-ee8e-493e-b9fc-03ee034fb926
+
 A macOS "dynamic island"–style floating widget for drag-and-drop access to your Pinterest pins from anywhere.
 
 A small pill sits at the top-center of your screen, always on top, never stealing focus. Hover it and it springs open into a scrollable grid of your pins; drag any pin out and it lands as a real image file in whatever you're working in — Figma, Finder, a chat input, etc.
