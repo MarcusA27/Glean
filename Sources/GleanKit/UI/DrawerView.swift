@@ -378,7 +378,22 @@ private struct ScrollWithBar<Content: View>: View {
             ScrollView(vertical ? .vertical : .horizontal, showsIndicators: false) {
                 content.background(ScrollGrabber { metrics.attach($0, vertical: vertical) })
             }
+            .mask(edgeFadeMask())
             .overlay(alignment: vertical ? .trailing : .bottom) { bar(track: track) }
+        }
+    }
+
+    /// Fades the top/bottom edges only as much as there is content cut off there: no top
+    /// fade at the very top, no bottom fade at the very end, growing smoothly in between.
+    private func edgeFadeMask() -> some View {
+        let topFade = vertical ? min(22, max(0, metrics.offset)) : 0
+        let bottomFade = vertical ? min(30, max(0, scrollable - metrics.offset)) : 0
+        return VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                .frame(height: topFade)
+            Rectangle().fill(.black)
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: bottomFade)
         }
     }
 

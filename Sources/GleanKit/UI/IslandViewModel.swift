@@ -28,7 +28,7 @@ public final class IslandViewModel: ObservableObject {
     /// (it's otherwise non-key so it never steals focus).
     var onSearchModeChange: ((Bool) -> Void)?
 
-    private var client: PinterestClient?
+    private var client: (any PinterestDataSource)?
     private var username: String?
     private var lastRefresh: Date?
     private var refreshing = false
@@ -66,7 +66,7 @@ public final class IslandViewModel: ObservableObject {
     }
 
     /// Called once at launch (and after re-auth): store the session client and load.
-    func connect(_ client: PinterestClient) {
+    func connect(_ client: any PinterestDataSource) {
         self.client = client
         loadAnalysis()
         Task { await fullLoad(progressive: true) }
@@ -98,7 +98,7 @@ public final class IslandViewModel: ObservableObject {
         if progressive { isLoading = pins.isEmpty }
         defer { refreshing = false; isLoading = false; lastRefresh = Date() }
 
-        await client.refreshAppVersion()
+        await client.prepare()
 
         switch await client.checkAuth() {
         case .ok(let user):
@@ -112,7 +112,7 @@ public final class IslandViewModel: ObservableObject {
         guard let user = username else { return }
 
         let apiBoards = await client.fetchBoards(username: user)
-        boards = apiBoards.map { Board(id: $0.id, name: $0.name, url: $0.url) }
+        boards = apiBoards
 
         var collected: [Pin] = []
         for board in apiBoards {
@@ -121,7 +121,7 @@ public final class IslandViewModel: ObservableObject {
             while page < 40 { // safety cap (~1000 pins/board)
                 let (apiPins, next) = await client.fetchPins(
                     boardID: board.id, boardURL: board.url, bookmark: bookmark)
-                collected.append(contentsOf: apiPins.map { mapPin($0, boardID: board.id) })
+                collected.append(contentsOf: apiPins)
                 if progressive { pins = collected }
                 page += 1
                 guard let next, next != "-end-" else { break }
@@ -140,12 +140,12 @@ public final class IslandViewModel: ObservableObject {
 
         let apiBoards = await client.fetchBoards(username: user)
         guard !apiBoards.isEmpty else { return } // likely a transient failure; leave pins as-is
-        boards = apiBoards.map { Board(id: $0.id, name: $0.name, url: $0.url) }
+        boards = apiBoards
 
         var firstPage: [Pin] = []
         for board in apiBoards {
-            let (apiPins, _) = await client.fetchPins(boardID: board.id, boardURL: board.url)
-            firstPage.append(contentsOf: apiPins.map { mapPin($0, boardID: board.id) })
+            let (apiPins, _) = await client.fetchPins(boardID: board.id, boardURL: board.url, bookmark: nil)
+            firstPage.append(contentsOf: apiPins)
         }
 
         let existing = Set(pins.map(\.id))
@@ -219,14 +219,6 @@ public final class IslandViewModel: ObservableObject {
            let raw = try? JSONDecoder().decode([String: [String]].self, from: data) {
             pinLabels = raw
         }
-    }
-
-    private func mapPin(_ pin: PinterestPin, boardID: String) -> Pin {
-        Pin(id: pin.id,
-            boardID: boardID,
-            title: pin.title,
-            thumbnailURL: pin.thumbnailURL.flatMap(URL.init(string:)),
-            fullResURL: pin.fullResURL.flatMap(URL.init(string:)))
     }
 
     /// Placeholder content for SwiftUI previews (no network).

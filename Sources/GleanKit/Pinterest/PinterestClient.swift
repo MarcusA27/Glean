@@ -2,9 +2,7 @@ import Foundation
 
 /// Talks to Pinterest's internal endpoints using the captured session cookies.
 @MainActor
-final class PinterestClient {
-    enum AuthResult { case ok(username: String?), unauthorized, networkError }
-
+final class PinterestClient: PinterestDataSource {
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
     private let cookies: [StoredCookie]
@@ -19,6 +17,9 @@ final class PinterestClient {
         config.httpCookieStorage = nil // we set the Cookie header explicitly
         session = URLSession(configuration: config)
     }
+
+    /// Warm-up before a load: refresh the frontend build hash.
+    func prepare() async { await refreshAppVersion() }
 
     /// Scrape the current build hash from the homepage HTML so requests aren't rejected
     /// after a Pinterest deploy. Leaves the fallback in place on failure.
@@ -39,7 +40,7 @@ final class PinterestClient {
 
     /// Distinguishes a live session from an expired one (vs a transient network error),
     /// so the app only re-prompts login when the session is actually invalid.
-    func checkAuth() async -> AuthResult {
+    func checkAuth() async -> PinterestAuthResult {
         let (status, body) = await getRaw(resource: "ApiResource",
                                           options: ["url": "/v3/users/me/", "data": ["fields": "username"]])
         switch status {
@@ -56,7 +57,7 @@ final class PinterestClient {
         }
     }
 
-    func fetchBoards(username: String) async -> [PinterestBoard] {
+    func fetchBoards(username: String) async -> [Board] {
         let (status, body) = await getRaw(resource: "BoardsResource", options: [
             "page_size": 50,
             "privacy_filter": "all",
@@ -67,11 +68,11 @@ final class PinterestClient {
               let env = try? JSONDecoder().decode(ResourceEnvelope<[PinterestBoard]>.self, from: data) else {
             return []
         }
-        return env.resourceResponse.data
+        return env.resourceResponse.data.map { Board(id: $0.id, name: $0.name, url: $0.url) }
     }
 
     func fetchPins(boardID: String, boardURL: String, bookmark: String? = nil)
-        async -> (pins: [PinterestPin], bookmark: String?) {
+        async -> (pins: [Pin], bookmark: String?) {
         var options: [String: Any] = [
             "board_id": boardID,
             "board_url": boardURL,
@@ -90,7 +91,15 @@ final class PinterestClient {
               let env = try? JSONDecoder().decode(ResourceEnvelope<[Failable<PinterestPin>]>.self, from: data) else {
             return ([], nil)
         }
-        let pins = env.resourceResponse.data.compactMap(\.value).filter { $0.thumbnailURL != nil }
+        let pins = env.resourceResponse.data.compactMap(\.value)
+            .filter { $0.thumbnailURL != nil }
+            .map { pin in
+                Pin(id: pin.id,
+                    boardID: boardID,
+                    title: pin.title,
+                    thumbnailURL: pin.thumbnailURL.flatMap(URL.init(string:)),
+                    fullResURL: pin.fullResURL.flatMap(URL.init(string:)))
+            }
         return (pins, env.resourceResponse.bookmark)
     }
 

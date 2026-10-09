@@ -10,6 +10,9 @@ public final class PanelController: NSObject {
     private var hoverMonitor: HoverMonitor?
     private var hotKey: HotKey?
     private var statusItem: NSStatusItem?
+    /// Invoked when the user toggles the official-API menu item, so the app can switch
+    /// backends and reconnect.
+    var onToggleOfficialAPI: (() -> Void)?
     private var cancellables = Set<AnyCancellable>()
     private var wasDragging = false
     /// Blocked leftward motion accumulated while the cursor is pinned at the left edge.
@@ -133,6 +136,11 @@ public final class PanelController: NSObject {
         refresh.target = self
         menu.addItem(refresh)
         menu.addItem(.separator())
+        let official = NSMenuItem(title: "Use Official API (beta)", action: #selector(menuToggleOfficialAPI), keyEquivalent: "")
+        official.target = self
+        official.state = UserDefaults.standard.bool(forKey: AppDelegate.useOfficialAPIKey) ? .on : .off
+        menu.addItem(official)
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Glean", action: #selector(menuQuit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -143,6 +151,10 @@ public final class PanelController: NSObject {
     @objc private func menuToggle() { toggle() }
     @objc private func menuRefresh() { model.reload() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
+    @objc private func menuToggleOfficialAPI(_ sender: NSMenuItem) {
+        onToggleOfficialAPI?()
+        sender.state = UserDefaults.standard.bool(forKey: AppDelegate.useOfficialAPIKey) ? .on : .off
+    }
 
     private static func menuBarIcon(from source: NSImage, size: CGFloat = 18, radius: CGFloat = 4.5) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size))
